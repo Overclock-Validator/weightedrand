@@ -12,6 +12,8 @@ import (
 	"errors"
 	"math/rand"
 	"sort"
+
+	"github.com/Overclock-Validator/frand"
 )
 
 // Choice is a generic wrapper that can be used to add weights for any item.
@@ -35,6 +37,7 @@ type Chooser[T any, W integer] struct {
 	data   []Choice[T, W]
 	totals []int
 	max    int
+	rng    *frand.RNG
 }
 
 // NewChooser initializes a new Chooser for picking from the provided choices.
@@ -68,6 +71,41 @@ func NewChooser[T any, W integer](choices ...Choice[T, W]) (*Chooser[T, W], erro
 	}
 
 	return &Chooser[T, W]{data: choices, totals: totals, max: runningTotal}, nil
+}
+
+// NewChooser initializes a new Chooser for picking from the provided choices.
+func NewChaCha20ChooserWithSeed[T any, W integer](seed []byte, choices ...Choice[T, W]) (*Chooser[T, W], error) {
+	rng := frand.NewCustom(seed, 1024, 20)
+
+	sort.Slice(choices, func(i, j int) bool {
+		return choices[i].Weight < choices[j].Weight
+	})
+
+	totals := make([]int, len(choices))
+	runningTotal := 0
+	for i, c := range choices {
+		if c.Weight < 0 {
+			continue // ignore negative weights, can never be picked
+		}
+
+		// case of single ~uint64 or similar value that exceeds maxInt on its own
+		if uint64(c.Weight) >= maxInt {
+			return nil, errWeightOverflow
+		}
+
+		weight := int(c.Weight) // convert weight to int for internal counter usage
+		if (maxInt - runningTotal) <= weight {
+			return nil, errWeightOverflow
+		}
+		runningTotal += weight
+		totals[i] = runningTotal
+	}
+
+	if runningTotal < 1 {
+		return nil, errNoValidChoices
+	}
+
+	return &Chooser[T, W]{data: choices, totals: totals, max: runningTotal, rng: rng}, nil
 }
 
 const (
@@ -113,6 +151,12 @@ func (c Chooser[T, W]) Pick() T {
 // manually seed it. Use [Chooser.Pick] instead.
 func (c Chooser[T, W]) PickSource(rs *rand.Rand) T {
 	r := rs.Intn(c.max) + 1
+	i := searchInts(c.totals, r)
+	return c.data[i].Item
+}
+
+func (c Chooser[T, W]) PickWithChaCha20() T {
+	r := c.rng.Intn(c.max) + 1
 	i := searchInts(c.totals, r)
 	return c.data[i].Item
 }
